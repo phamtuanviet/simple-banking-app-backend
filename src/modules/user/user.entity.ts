@@ -63,14 +63,14 @@ export class User {
   // NHÓM 2: QUÊN/ĐỔI MẬT KHẨU (PASSWORD RESET)
   // ==========================================
   @Column({ name: 'reset_password_token', type: 'varchar', nullable: true })
-  resetPasswordToken: string;
+  resetPasswordToken: string | null;
 
   @Column({
     name: 'reset_password_expires_at',
     type: 'timestamp',
     nullable: true,
   })
-  resetPasswordExpiresAt: Date;
+  resetPasswordExpiresAt: Date | null;
 
   // ==========================================
   // NHÓM 3: BẢO MẬT & CHỐNG TẤN CÔNG (SECURITY)

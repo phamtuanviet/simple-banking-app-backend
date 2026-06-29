@@ -34,4 +34,32 @@ export class MailService {
       );
     }
   }
+
+  async sendPasswordResetEmail(email: string, token: string) {
+    // Đường dẫn này trỏ về trang Nhập Mật Khẩu Mới của Frontend
+    const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${token}`;
+
+    try {
+      await this.mailerService.sendMail({
+        to: email,
+        subject: 'Yêu cầu đặt lại mật khẩu',
+        html: `
+          <div style="font-family: Arial, sans-serif; padding: 20px;">
+            <h3>Chào bạn,</h3>
+            <p>Chúng tôi nhận được yêu cầu đặt lại mật khẩu cho tài khoản của bạn.</p>
+            <p>Vui lòng click vào nút bên dưới để tạo mật khẩu mới:</p>
+            <a href="${resetUrl}" style="background-color: #f44336; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">
+              Đặt Lại Mật Khẩu
+            </a>
+            <p><em>Lưu ý: Link này chỉ có hiệu lực trong vòng 15 phút.</em></p>
+            <p>Nếu bạn không yêu cầu đổi mật khẩu, hãy bỏ qua email này. Tài khoản của bạn vẫn an toàn.</p>
+          </div>
+        `,
+      });
+      console.log(`Đã gửi email khôi phục mật khẩu tới: ${email}`);
+    } catch (error) {
+      console.error('Lỗi khi gửi email khôi phục:', error);
+      // Không throw exception ở đây để thực hiện Fire-and-Forget
+    }
+  }
 }

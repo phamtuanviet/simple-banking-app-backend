@@ -9,13 +9,16 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import * as crypto from 'crypto'; // Thư viện có sẵn của Node.js để tạo chuỗi ngẫu nhiên
-import { User } from '../user/user.entity';
+import { User, UserStatus } from '../user/user.entity';
 import { RegisterDto } from './dto/register.dto';
 import { MailService } from '../mail/mail.service';
 import { ResendEmailDto } from './dto/resend-email.dto';
 import { RefreshToken } from './entities/refresh-token.entity';
 import { JwtService } from '@nestjs/jwt';
 import { LoginDto } from './dto/login.dto';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
+import { RefreshTokenDto } from './dto/refresh-token.dto';
 
 @Injectable()
 export class AuthService {
@@ -31,8 +34,6 @@ export class AuthService {
   async login(loginDto: LoginDto, ipAddress?: string, userAgent?: string) {
     const { email, password } = loginDto;
     const user = await this.userRepository.findOne({ where: { email } });
-
-    // ... (Toàn bộ logic kiểm tra khóa tài khoản, check password, failed attempts giữ nguyên như cũ) ...
 
     if (!user) {
       throw new UnauthorizedException('Email hoặc mật khẩu không chính xác');
@@ -85,7 +86,7 @@ export class AuthService {
     }
 
     // 6. Kiểm tra trạng thái Status (Có bị Admin Banned không)
-    if (user.status !== 'active') {
+    if (user.status !== UserStatus.ACTIVE) {
       // Giả sử 'active' là Enum UserStatus.ACTIVE
       throw new ForbiddenException(
         'Tài khoản của bạn đã bị khóa hoặc vô hiệu hóa bởi Quản trị viên.',
@@ -107,7 +108,10 @@ export class AuthService {
     const refreshTokenString = crypto.randomBytes(64).toString('hex');
 
     // 4. Băm Refresh Token để lưu vào DB (Đề phòng DB bị hack cũng không lộ token gốc)
-    const hashedRefreshToken = await bcrypt.hash(refreshTokenString, 10);
+    const hashedRefreshToken = crypto
+      .createHash('sha256')
+      .update(refreshTokenString)
+      .digest('hex');
 
     // 5. Tính ngày hết hạn của Refresh Token (Ví dụ: 7 ngày)
     const rtExpiresAt = new Date();
@@ -147,7 +151,43 @@ export class AuthService {
       where: { email },
     });
     if (existingUser) {
-      throw new ConflictException('Email này đã được sử dụng!');
+      if (existingUser.isEmailVerified) {
+        throw new ConflictException('Email này đã được sử dụng!');
+      }
+
+      const now = new Date();
+      if (
+        existingUser.emailVerificationExpiresAt &&
+        existingUser.emailVerificationExpiresAt > now
+      ) {
+        throw new ConflictException(
+          'Email này đang trong quá trình chờ xác thực. Vui lòng kiểm tra hộp thư!',
+        );
+      }
+
+      const saltRounds = 10;
+      const passwordHash = await bcrypt.hash(password, saltRounds);
+      const emailVerificationToken = crypto.randomBytes(32).toString('hex');
+      const expiresAt = new Date();
+      expiresAt.setHours(expiresAt.getHours() + 24);
+
+      existingUser.fullName = fullName;
+      existingUser.passwordHash = passwordHash;
+      existingUser.emailVerificationToken = emailVerificationToken;
+      existingUser.emailVerificationExpiresAt = expiresAt;
+      existingUser.lastVerificationSentAt = new Date();
+
+      await this.userRepository.save(existingUser);
+
+      this.mailService
+        .sendVerificationEmail(existingUser.email, emailVerificationToken)
+        .catch((error) => console.error('Lỗi gửi mail tái đăng ký:', error));
+
+      return {
+        message:
+          'Tài khoản chưa kích hoạt cũ đã được cập nhật. Vui lòng kiểm tra email mới để xác nhận!',
+        userId: existingUser.id,
+      };
     }
 
     // 2. Băm mật khẩu (Hash password)
@@ -278,6 +318,178 @@ export class AuthService {
       success: true,
       message:
         'Xác nhận địa chỉ email thành công. Bây giờ bạn có thể đăng nhập.',
+    };
+  }
+
+  async forgotPassword(forgotPasswordDto: ForgotPasswordDto) {
+    const { email } = forgotPasswordDto;
+    const user = await this.userRepository.findOne({ where: { email } });
+
+    // Dù user có tồn tại hay không, vẫn trả về chung 1 câu thông báo (Bảo mật chống dò Email)
+    const successMessage =
+      'Nếu email của bạn tồn tại trên hệ thống, một đường dẫn đặt lại mật khẩu đã được gửi đến hộp thư.';
+
+    if (!user) {
+      return { success: true, message: successMessage };
+    }
+
+    // Nếu user tồn tại, tạo Token ngẫu nhiên
+    const resetToken = crypto.randomBytes(32).toString('hex');
+
+    // Cài đặt thời gian hết hạn là 15 phút
+    const expiresAt = new Date();
+    expiresAt.setMinutes(expiresAt.getMinutes() + 15);
+
+    // Lưu Token vào Database
+    user.resetPasswordToken = resetToken;
+    user.resetPasswordExpiresAt = expiresAt;
+    await this.userRepository.save(user);
+
+    // Gửi email (Fire-and-Forget)
+    this.mailService
+      .sendPasswordResetEmail(user.email, resetToken)
+      .catch((error) => console.error('Lỗi gửi mail Reset Password:', error));
+
+    return {
+      success: true,
+      message: successMessage,
+    };
+  }
+
+  async resetPassword(resetPasswordDto: ResetPasswordDto) {
+    const { token, newPassword } = resetPasswordDto;
+
+    // Tìm user đang giữ cái token này
+    const user = await this.userRepository.findOne({
+      where: { resetPasswordToken: token },
+    });
+
+    // Báo lỗi nếu token sai hoặc tài khoản không tồn tại
+    if (!user) {
+      throw new BadRequestException(
+        'Đường dẫn không hợp lệ hoặc đã bị thay đổi.',
+      );
+    }
+
+    // Báo lỗi nếu quá 15 phút (Token hết hạn)
+    if (
+      user.resetPasswordExpiresAt &&
+      user.resetPasswordExpiresAt < new Date()
+    ) {
+      throw new BadRequestException(
+        'Đường dẫn đặt lại mật khẩu đã hết hạn. Vui lòng yêu cầu gửi lại.',
+      );
+    }
+
+    // Nếu hợp lệ: Băm mật khẩu mới
+    const passwordHash = await bcrypt.hash(newPassword, 10);
+    user.passwordHash = passwordHash;
+
+    // Xóa sạch Token và Hạn sử dụng sau khi đổi xong
+    user.resetPasswordToken = null;
+    user.resetPasswordExpiresAt = null;
+
+    // (Nâng cao) Reset luôn số lần nhập sai pass nếu tài khoản đang bị khóa do Brute-force
+    user.failedLoginAttempts = 0;
+    user.lockoutUntil = null;
+
+    await this.userRepository.save(user);
+
+    return {
+      success: true,
+      message:
+        'Đặt lại mật khẩu thành công. Bây giờ bạn có thể đăng nhập bằng mật khẩu mới.',
+    };
+  }
+
+  async refreshToken(
+    refreshTokenDto: RefreshTokenDto,
+    ipAddress?: string,
+    userAgent?: string,
+  ) {
+    const { refreshToken } = refreshTokenDto;
+
+    // 1. Băm token user gửi lên bằng đúng thuật toán SHA-256 để tìm trong DB
+    const hashedToken = crypto
+      .createHash('sha256')
+      .update(refreshToken)
+      .digest('hex');
+
+    // 2. Tìm Session chứa token này (Join với bảng User để lấy data)
+    const session = await this.refreshTokenRepo.findOne({
+      where: { hashedToken },
+      relations: {
+        user: true,
+      },
+    });
+
+    // Nếu không tìm thấy -> Báo lỗi ngay
+    if (!session) {
+      throw new UnauthorizedException(
+        'Refresh Token không hợp lệ hoặc đã bị thu hồi.',
+      );
+    }
+
+    const { user } = session;
+
+    // 3. Kiểm tra xem Token đã hết hạn chưa
+    if (session.expiresAt < new Date()) {
+      // Dọn rác DB
+      await this.refreshTokenRepo.remove(session);
+      throw new UnauthorizedException(
+        'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.',
+      );
+    }
+
+    // 4. Kiểm tra xem tài khoản User có đang bị Admin khóa không?
+    // Phải check bước này phòng khi user bị ban nhưng token vẫn còn hạn
+    if (user.status !== UserStatus.ACTIVE) {
+      await this.refreshTokenRepo.remove(session); // Hủy luôn phiên này
+      throw new ForbiddenException('Tài khoản của bạn đã bị khóa.');
+    }
+
+    // ===============================================
+    // 5. TOKEN ROTATION (BẢO MẬT CHUẨN PRODUCTION)
+    // ===============================================
+
+    // Bắt buộc XÓA session cũ đi (chỉ dùng 1 lần)
+    await this.refreshTokenRepo.remove(session);
+
+    // ===============================================
+    // 6. CẤP CẶP TOKEN MỚI TINH
+    // ===============================================
+
+    // Cấp Access Token mới
+    const jwtPayload = { sub: user.id, email: user.email, role: user.role };
+    const newAccessToken = this.jwtService.sign(jwtPayload);
+
+    // Cấp Refresh Token mới
+    const newRefreshTokenString = crypto.randomBytes(64).toString('hex');
+    const newHashedRefreshToken = crypto
+      .createHash('sha256')
+      .update(newRefreshTokenString)
+      .digest('hex');
+
+    const rtExpiresAt = new Date();
+    rtExpiresAt.setDate(rtExpiresAt.getDate() + 7);
+
+    // Lưu phiên bản mới vào DB
+    const newSession = this.refreshTokenRepo.create({
+      hashedToken: newHashedRefreshToken,
+      expiresAt: rtExpiresAt,
+      ipAddress: ipAddress,
+      userAgent: userAgent,
+      user: user,
+    });
+    await this.refreshTokenRepo.save(newSession);
+
+    // 7. Trả về cho Frontend
+    return {
+      message: 'Làm mới phiên đăng nhập thành công',
+      tokens: {
+        accessToken: newAccessToken,
+        refreshToken: newRefreshTokenString,
+      },
     };
   }
 }
