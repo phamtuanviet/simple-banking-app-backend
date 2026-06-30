@@ -18,7 +18,6 @@ import { JwtService } from '@nestjs/jwt';
 import { LoginDto } from './dto/login.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
-import { RefreshTokenDto } from './dto/refresh-token.dto';
 
 @Injectable()
 export class AuthService {
@@ -136,10 +135,8 @@ export class AuthService {
         fullName: user.fullName,
         role: user.role,
       },
-      tokens: {
-        accessToken: accessToken,
-        refreshToken: refreshTokenString, // Trả về chuỗi GỐC chưa băm cho Frontend giữ
-      },
+      accessToken: accessToken,
+      refreshToken: refreshTokenString, // Trả về chuỗi GỐC chưa băm cho Frontend giữ
     };
   }
 
@@ -403,16 +400,14 @@ export class AuthService {
   }
 
   async refreshToken(
-    refreshTokenDto: RefreshTokenDto,
+    oldRefreshTokenString: string,
     ipAddress?: string,
     userAgent?: string,
   ) {
-    const { refreshToken } = refreshTokenDto;
-
     // 1. Băm token user gửi lên bằng đúng thuật toán SHA-256 để tìm trong DB
     const hashedToken = crypto
       .createHash('sha256')
-      .update(refreshToken)
+      .update(oldRefreshTokenString)
       .digest('hex');
 
     // 2. Tìm Session chứa token này (Join với bảng User để lấy data)
@@ -485,11 +480,24 @@ export class AuthService {
 
     // 7. Trả về cho Frontend
     return {
-      message: 'Làm mới phiên đăng nhập thành công',
-      tokens: {
-        accessToken: newAccessToken,
-        refreshToken: newRefreshTokenString,
-      },
+      newAccessToken,
+      newRefreshTokenString,
     };
+  }
+
+  async logout(refreshTokenString: string): Promise<void> {
+    const hashedToken = crypto
+      .createHash('sha256')
+      .update(refreshTokenString)
+      .digest('hex');
+
+    // Có thể dùng lệnh delete hoặc update isRevoked = true
+    const session = await this.refreshTokenRepo.findOne({
+      where: { hashedToken },
+    });
+
+    if (session) {
+      await this.refreshTokenRepo.remove(session);
+    }
   }
 }

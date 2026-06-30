@@ -7,7 +7,7 @@ export class MailService {
 
   async sendVerificationEmail(email: string, token: string) {
     // Đường dẫn này thường trỏ về Frontend, Frontend sẽ gọi API verify của Backend
-    const verifyUrl = `${process.env.FRONTEND_URL}/verify-email?token=${token}`;
+    const verifyUrl = `${process.env.FONTEND_URL}/verify-email?token=${token}`;
 
     try {
       await this.mailerService.sendMail({
@@ -37,7 +37,7 @@ export class MailService {
 
   async sendPasswordResetEmail(email: string, token: string) {
     // Đường dẫn này trỏ về trang Nhập Mật Khẩu Mới của Frontend
-    const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${token}`;
+    const resetUrl = `${process.env.FONTEND_URL}/reset-password?token=${token}`;
 
     try {
       await this.mailerService.sendMail({
