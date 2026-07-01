@@ -3,6 +3,7 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  InternalServerErrorException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -18,7 +19,8 @@ import { JwtService } from '@nestjs/jwt';
 import { LoginDto } from './dto/login.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
-import { RefreshTokenDto } from './dto/refresh-token.dto';
+import { DataSource } from 'typeorm';
+import { Account } from '../account/entities/account.entity';
 
 @Injectable()
 export class AuthService {
@@ -29,7 +31,12 @@ export class AuthService {
     private readonly refreshTokenRepo: Repository<RefreshToken>,
     private readonly mailService: MailService,
     private readonly jwtService: JwtService,
+    private readonly dataSource: DataSource,
   ) {}
+
+  private generateAccountNumber(): string {
+    return Math.floor(1000000000 + Math.random() * 9000000000).toString();
+  }
 
   async login(loginDto: LoginDto, ipAddress?: string, userAgent?: string) {
     const { email, password } = loginDto;
@@ -136,10 +143,8 @@ export class AuthService {
         fullName: user.fullName,
         role: user.role,
       },
-      tokens: {
-        accessToken: accessToken,
-        refreshToken: refreshTokenString, // Trả về chuỗi GỐC chưa băm cho Frontend giữ
-      },
+      accessToken: accessToken,
+      refreshToken: refreshTokenString, // Trả về chuỗi GỐC chưa băm cho Frontend giữ
     };
   }
 
@@ -305,20 +310,45 @@ export class AuthService {
       );
     }
 
-    // Nếu mọi thứ OK -> Cập nhật trạng thái
-    user.isEmailVerified = true;
+    const queryRunner = this.dataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
 
-    // Dọn dẹp token cũ để không bị dùng lại
-    user.emailVerificationToken = null;
-    user.emailVerificationExpiresAt = null;
+    try {
+      user.isEmailVerified = true;
 
-    await this.userRepository.save(user);
+      // Dọn dẹp token cũ để không bị dùng lại
+      user.emailVerificationToken = null;
+      user.emailVerificationExpiresAt = null;
 
-    return {
-      success: true,
-      message:
-        'Xác nhận địa chỉ email thành công. Bây giờ bạn có thể đăng nhập.',
-    };
+      await queryRunner.manager.save(User, user);
+
+      const account = new Account();
+      account.accountNumber = this.generateAccountNumber();
+      account.balance = 0;
+      account.currency = 'VND';
+      account.user = user;
+      // Có thể thêm vòng lặp try-catch ở đây trong thực tế để handle lỗi trùng accountNumber (unique constraint)
+      await queryRunner.manager.save(Account, account);
+
+      // Nếu cả 2 bước thành công -> Commit
+      await queryRunner.commitTransaction();
+      return {
+        success: true,
+        message:
+          'Xác nhận địa chỉ email thành công và tài khoản ngân hàng đã được tạo. Bạn có thể đăng nhập.',
+      };
+    } catch (error) {
+      // Có lỗi bất kỳ -> Rollback toàn bộ
+      await queryRunner.rollbackTransaction();
+      console.error('Error during email verification transaction:', error);
+      throw new InternalServerErrorException(
+        'Có lỗi xảy ra khi khởi tạo tài khoản ngân hàng. Vui lòng thử lại.',
+      );
+    } finally {
+      // Luôn phải release connection
+      await queryRunner.release();
+    }
   }
 
   async forgotPassword(forgotPasswordDto: ForgotPasswordDto) {
@@ -403,16 +433,14 @@ export class AuthService {
   }
 
   async refreshToken(
-    refreshTokenDto: RefreshTokenDto,
+    oldRefreshTokenString: string,
     ipAddress?: string,
     userAgent?: string,
   ) {
-    const { refreshToken } = refreshTokenDto;
-
     // 1. Băm token user gửi lên bằng đúng thuật toán SHA-256 để tìm trong DB
     const hashedToken = crypto
       .createHash('sha256')
-      .update(refreshToken)
+      .update(oldRefreshTokenString)
       .digest('hex');
 
     // 2. Tìm Session chứa token này (Join với bảng User để lấy data)
@@ -485,11 +513,24 @@ export class AuthService {
 
     // 7. Trả về cho Frontend
     return {
-      message: 'Làm mới phiên đăng nhập thành công',
-      tokens: {
-        accessToken: newAccessToken,
-        refreshToken: newRefreshTokenString,
-      },
+      newAccessToken,
+      newRefreshTokenString,
     };
+  }
+
+  async logout(refreshTokenString: string): Promise<void> {
+    const hashedToken = crypto
+      .createHash('sha256')
+      .update(refreshTokenString)
+      .digest('hex');
+
+    // Có thể dùng lệnh delete hoặc update isRevoked = true
+    const session = await this.refreshTokenRepo.findOne({
+      where: { hashedToken },
+    });
+
+    if (session) {
+      await this.refreshTokenRepo.remove(session);
+    }
   }
 }
