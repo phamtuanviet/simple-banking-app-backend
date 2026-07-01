@@ -76,9 +76,6 @@ export class User {
   // NHÓM 3: BẢO MẬT & CHỐNG TẤN CÔNG (SECURITY)
   // ==========================================
 
-  @Column({ name: 'hashed_refresh_token', type: 'varchar', nullable: true })
-  hashedRefreshToken: string;
-
   @Column({ name: 'failed_login_attempts', type: 'int', default: 0 })
   failedLoginAttempts: number;
 
