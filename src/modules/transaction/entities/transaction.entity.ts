@@ -53,4 +53,12 @@ export class Transaction {
   @ManyToOne(() => Account, { nullable: true })
   @JoinColumn({ name: 'to_account_id' })
   toAccount: Account;
+
+  @Column({
+    name: 'idempotency_key',
+    type: 'varchar',
+    unique: true,
+    nullable: true,
+  })
+  idempotencyKey: string;
 }
