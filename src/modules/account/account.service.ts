@@ -28,4 +28,25 @@ export class AccountService {
       balance: parseFloat(account.balance.toString()),
     };
   }
+
+  async getRecipientInfo(accountNumber: string) {
+    const account = await this.accountRepository.findOne({
+      where: {
+        accountNumber: accountNumber,
+        isActive: true, // Tùy chọn: Đảm bảo tài khoản này đang không bị khóa
+      },
+      relations: { user: true }, // BẮT BUỘC: để TypeORM join sang bảng users lấy fullName
+    });
+
+    // Nếu gõ sai số tài khoản hoặc không tồn tại, quăng lỗi 404
+    if (!account) {
+      throw new NotFoundException('Không tìm thấy tài khoản người nhận hợp lệ');
+    }
+
+    // Quan trọng: CHỈ trả về số tài khoản và tên, không trả về toàn bộ thực thể account (ẩn balance, id, v.v.)
+    return {
+      accountNumber: account.accountNumber,
+      fullName: account.user.fullName,
+    };
+  }
 }

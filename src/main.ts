@@ -3,6 +3,7 @@ import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { TransformInterceptor } from './common/interceptors/transform.interceptor';
 import cookieParser from 'cookie-parser';
+import { ValidationPipe } from '@nestjs/common';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -12,6 +13,13 @@ async function bootstrap() {
     origin: process.env.FONTEND_URL, // Tên miền của Frontend ReactJS
     credentials: true, // BẮT BUỘC phải có cái này để Frontend gửi được cookie lên
   });
+
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      transform: true,
+    }),
+  );
 
   app.useGlobalFilters(new HttpExceptionFilter());
 

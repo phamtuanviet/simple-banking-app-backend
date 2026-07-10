@@ -1,17 +1,51 @@
 version: '3.8'
+
 services:
-  db:
-    image: postgres:15-alpine
-    container_name: simple_banking_db
-    restart: always
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
+  frontend:
+    build:
+      context: ../simple-banking-web # Đường dẫn tới thư mục frontend
+      dockerfile: Dockerfile
+      args:
+        # Biến này được truyền vào lúc build Docker image cho frontend.
+        # Nó cần được định nghĩa trong file .env ở thư mục backend này.
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:3000}
+    container_name: simple-banking-frontend
     ports:
-      - "5432:5432"
+      - "3001:80" # Map cổng 3001 của host vào cổng 80 của container Nginx
+    networks:
+      - banking-net
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: simple-banking-backend
+    env_file:
+      - .env
+    ports:
+      - '${PORT:-3000}:${PORT:-3000}' # Map host port from .env (default 3000) to container port
+    depends_on:
+      - db
+    networks:
+      - banking-net
+
+  db:
+    image: postgres:14-alpine
+    container_name: simple-banking-db
+    environment:
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_DATABASE_NAME}
+    ports:
+      - '${DB_PORT:-5432}:5432'
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    networks:
+      - banking-net
 
 volumes:
   postgres_data:
+
+networks:
+  banking-net:
+    driver: bridge

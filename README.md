@@ -1,98 +1,193 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Simple Banking App - Backend
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Backend cho ứng dụng ngân hàng đơn giản, được xây dựng bằng NestJS, TypeORM, và PostgreSQL.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## Mục lục
 
-## Description
+- [Tính năng](#tính-năng)
+- [Công nghệ sử dụng](#công-nghệ-sử-dụng)
+- [Yêu cầu cài đặt](#yêu-cầu-cài-đặt)
+- [Hướng dẫn cài đặt](#hướng-dẫn-cài-đặt)
+  - [1. Cài đặt thủ công (Local)](#1-cài-đặt-thủ-công-local)
+  - [2. Cài đặt bằng Docker](#2-cài-đặt-bằng-docker)
+- [Cấu hình môi trường (.env)](#cấu-hình-môi-trường-env)
+- [Tài liệu API](#tài-liệu-api)
+- [Chạy ứng dụng](#chạy-ứng-dụng)
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+## Tính năng
 
-## Project setup
+- Xác thực người dùng (Đăng ký, Đăng nhập, JWT, Refresh Token).
+- Quản lý tài khoản ngân hàng.
+- Chuyển tiền giữa các tài khoản.
+- Xem lịch sử giao dịch.
+- Thông báo real-time qua WebSockets.
+- Phân quyền người dùng (User, Admin).
 
-```bash
-$ npm install
-```
+## Công nghệ sử dụng
 
-## Compile and run the project
+- **Framework**: [NestJS](https://nestjs.com/)
+- **Ngôn ngữ**: TypeScript
+- **ORM**: [TypeORM](https://typeorm.io/)
+- **Cơ sở dữ liệu**: PostgreSQL
+- **Xác thực**: JWT (JSON Web Tokens), Passport.js
+- **Real-time**: Socket.IO
+- **Validation**: class-validator, class-transformer
+- **Email**: Nodemailer
+- **Containerization**: Docker
 
-```bash
-# development
-$ npm run start
+## Yêu cầu cài đặt
 
-# watch mode
-$ npm run start:dev
+- [Node.js](https://nodejs.org/en/) (v18.x trở lên)
+- [Yarn](https://yarnpkg.com/) hoặc [npm](https://www.npmjs.com/)
+- [PostgreSQL](https://www.postgresql.org/) (v14 trở lên)
+- [Docker](https://www.docker.com/) và [Docker Compose](https://docs.docker.com/compose/) (nếu chạy bằng Docker)
 
-# production mode
-$ npm run start:prod
-```
+---
 
-## Run tests
+## Hướng dẫn cài đặt
 
-```bash
-# unit tests
-$ npm run test
+### 1. Cài đặt thủ công (Local)
 
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
-```
-
-## Deployment
-
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+**Bước 1: Clone repository**
 
 ```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
+git clone <your-repository-url>
+cd simple-banking-app-backend
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+**Bước 2: Cài đặt dependencies**
 
-## Resources
+```bash
+npm install
+```
 
-Check out a few resources that may come in handy when working with NestJS:
+**Bước 3: Cấu hình cơ sở dữ liệu**
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+Đảm bảo bạn đã cài đặt và khởi chạy PostgreSQL. Tạo một database mới, ví dụ `simple_banking`.
 
-## Support
+**Bước 4: Cấu hình biến môi trường**
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+Tạo một file `.env` ở thư mục gốc của project. Xem chi tiết các biến cần thiết ở mục Cấu hình môi trường (.env).
 
-## Stay in touch
+**Bước 5: Khởi chạy ứng dụng**
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+```bash
+npm run start:dev
+```
 
-## License
+Ứng dụng sẽ chạy tại `http://localhost:3000` (hoặc cổng bạn đã cấu hình trong `.env`).
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+### 2. Cài đặt bằng Docker
+
+Phương pháp này sẽ tự động dựng và chạy cả backend và database PostgreSQL trong các container riêng biệt.
+
+**Bước 1: Clone repository** (Nếu chưa có)
+
+**Bước 2: Cấu hình biến môi trường**
+
+Tạo file `.env` ở thư mục gốc. Các biến môi trường cho database phải trỏ đến tên service của database trong file `docker-compose.yml` (ví dụ `DB_HOST=db`).
+
+**Bước 3: Khởi chạy với Docker Compose**
+
+```bash
+docker-compose up --build
+```
+
+Lệnh này sẽ build Docker image cho ứng dụng NestJS, kéo image PostgreSQL, và khởi chạy các container. Ứng dụng sẽ có thể truy cập tại `http://localhost:3000`.
+
+Để dừng các container:
+
+```bash
+docker-compose down
+```
+
+---
+
+## Tài liệu API
+
+Một tài liệu API cơ bản dạng Markdown đã được tạo để cung cấp cái nhìn tổng quan về các endpoint chính.
+
+Xem chi tiết tại: [**API_DOCUMENTATION.md**](./API_DOCUMENTATION.md)
+
+---
+
+## Cấu hình môi trường (.env)
+
+Tạo file `.env` ở thư mục gốc và điền các giá trị cần thiết.
+
+```env
+# Application
+PORT=3000
+FONTEND_URL=http://localhost:3001
+
+# Database (PostgreSQL) - Use 'db' for DB_HOST when running with Docker
+DB_HOST=localhost
+DB_PORT=5432
+DB_USERNAME=postgres
+DB_PASSWORD=your_postgres_password
+DB_DATABASE_NAME=simple_banking
+
+# JWT Secrets
+JWT_ACCESS_SECRET=your_super_secret_access_key
+JWT_ACCESS_EXPIRES_IN=15m
+JWT_REFRESH_SECRET=your_super_secret_refresh_key
+
+# Mailer (e.g., Mailtrap or Gmail)
+MAIL_HOST=smtp.mailtrap.io
+MAIL_PORT=2525
+MAIL_USER=your_mailtrap_user
+MAIL_PASS=your_mailtrap_password
+MAIL_FROM="Simple Banking" <noreply@simplebanking.com>
+```
+
+---
+
+## Chạy ứng dụng
+
+```bash
+# Development mode (với hot-reload)
+npm run start:dev
+
+# Production mode
+npm run build
+npm run start:prod
+```
+
+---
+
+## Seeding dữ liệu (Tùy chọn)
+
+Project đã có sẵn một kịch bản để tạo dữ liệu mẫu, bao gồm 2 user ("Alice", "Bob") và 1 admin ("Admin") để bạn có thể thử nghiệm ngay các tính năng như đăng nhập, xem số dư, và chuyển khoản.
+
+**Lưu ý:** Script này sẽ không tạo lại user nếu email đã tồn tại trong database.
+
+### Yêu cầu
+
+Cần cài đặt `ts-node` nếu bạn chưa có:
+
+```bash
+npm install -g ts-node
+```
+
+### Chạy script
+
+1.  Thêm dòng sau vào phần `"scripts"` trong file `package.json` của bạn:
+
+    ```json
+    "seed": "ts-node -r tsconfig-paths/register src/database/seeds/run-seed.ts"
+    ```
+
+2.  Chạy lệnh sau từ terminal:
+    ```bash
+    npm run seed
+    ```
+
+**Thông tin đăng nhập mẫu:**
+
+- **User 1:** Email: `alice@example.com`, Mật khẩu: `Password123!`
+- **User 2:** Email: `bob@example.com`, Mật khẩu: `Password123!`
+- **Admin:** Email: `admin@example.com`, Mật khẩu: `AdminPassword123!`
+
+```
+
+```

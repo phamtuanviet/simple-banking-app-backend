@@ -8,6 +8,7 @@ import { AccountModule } from './modules/account/account.module';
 import { TransactionModule } from './modules/transaction/transaction.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { EventEmitterModule } from '@nestjs/event-emitter';
+import { NotificationModule } from './modules/notification/notification.module';
 import { ScheduleModule } from '@nestjs/schedule';
 
 @Module({
@@ -28,6 +29,7 @@ import { ScheduleModule } from '@nestjs/schedule';
     AccountModule,
     TransactionModule,
     AdminModule,
+    NotificationModule,
   ],
   controllers: [],
   providers: [],
