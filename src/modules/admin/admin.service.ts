@@ -256,7 +256,7 @@ export class AdminService {
       this.userRepository.count({ where: { status: UserStatus.LOCKED } }),
       this.transactionRepository.count(),
       this.transactionRepository.count({
-        where: { status: TransactionStatus.SUCCESS },
+        where: { status: TransactionStatus.COMPLETED },
       }),
     ]);
 

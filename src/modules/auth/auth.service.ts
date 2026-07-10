@@ -125,6 +125,8 @@ export class AuthService {
     rtExpiresAt.setDate(rtExpiresAt.getDate() + 7);
 
     // 6. Lưu vào bảng refresh_tokens
+
+    console.log('create refresh token:');
     const newSession = this.refreshTokenRepo.create({
       hashedToken: hashedRefreshToken,
       expiresAt: rtExpiresAt,

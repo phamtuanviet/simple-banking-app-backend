@@ -10,6 +10,10 @@ import { AdminModule } from './modules/admin/admin.module';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { NotificationModule } from './modules/notification/notification.module';
 import { ScheduleModule } from '@nestjs/schedule';
+import { ClsModule } from 'nestjs-cls';
+import { Request } from 'express';
+import { AuditLogModule } from './modules/audit-log/audit-log.module';
+import { CloudinaryModule } from './modules/cloudinary/cloudinary.module';
 
 @Module({
   imports: [
@@ -24,12 +28,28 @@ import { ScheduleModule } from '@nestjs/schedule';
       inject: [ConfigService],
       useFactory: getDatabaseConfig,
     }),
+    ClsModule.forRoot({
+      global: true,
+      middleware: {
+        mount: true,
+        setup: (cls, req: Request) => {
+          // Lấy IP thật của request
+          const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+          cls.set('ip', ip);
+
+          // Lấy thông tin thiết bị/trình duyệt
+          cls.set('userAgent', req.headers['user-agent']);
+        },
+      },
+    }),
     UserModule,
     AuthModule,
     AccountModule,
     TransactionModule,
     AdminModule,
     NotificationModule,
+    AuditLogModule,
+    CloudinaryModule,
   ],
   controllers: [],
   providers: [],

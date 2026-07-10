@@ -12,12 +12,17 @@ export enum TransactionType {
   TRANSFER = 'transfer',
   DEPOSIT = 'deposit',
   WITHDRAWAL = 'withdrawal',
+  REVERSAL = 'reversal',
 }
 
 export enum TransactionStatus {
   PENDING = 'pending',
-  SUCCESS = 'success',
+  PENDING_OTP = 'pending_otp',
+  PENDING_APPROVAL = 'pending_approval',
+  PROCESSING = 'processing',
+  COMPLETED = 'completed',
   FAILED = 'failed',
+  REVERSED = 'reversed',
 }
 
 @Entity('transactions')
@@ -61,4 +66,13 @@ export class Transaction {
     nullable: true,
   })
   idempotencyKey: string;
+
+  // ==========================================
+  // [MỚI] LIÊN KẾT HOÀN TIỀN (REVERSAL)
+  // ==========================================
+
+  // Trỏ về chính entity Transaction (Self-referencing)
+  @ManyToOne(() => Transaction, { nullable: true })
+  @JoinColumn({ name: 'original_transaction_id' })
+  originalTransaction: Transaction;
 }

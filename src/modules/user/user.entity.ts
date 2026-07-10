@@ -14,6 +14,7 @@ import { RefreshToken } from '../auth/entities/refresh-token.entity';
 export enum UserRole {
   CUSTOMER = 'customer',
   ADMIN = 'admin',
+  TELLER = 'teller',
 }
 
 export enum UserStatus {
@@ -41,6 +42,24 @@ export class User {
 
   @Column({ type: 'enum', enum: UserStatus, default: UserStatus.ACTIVE })
   status: UserStatus;
+
+  @Column({ name: 'date_of_birth', type: 'date', nullable: true })
+  dateOfBirth: string | null;
+
+  @Column({ name: 'avatar_url', type: 'text', nullable: true })
+  avatarUrl: string | null;
+
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  address: string | null;
+
+  @Column({
+    name: 'phone_number',
+    type: 'varchar',
+    length: 15,
+    nullable: true,
+    unique: true,
+  })
+  phoneNumber: string | null;
 
   // ==========================================
   // NHÓM 1: XÁC NHẬN EMAIL (EMAIL VERIFICATION)

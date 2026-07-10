@@ -4,6 +4,7 @@ import {
   InternalServerErrorException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import * as bcrypt from 'bcrypt';
 import {
   Repository,
   DataSource,
@@ -24,6 +25,17 @@ import {
   NotificationStatus,
   NotificationType,
 } from '../notification/notification.entity';
+import {
+  LedgerEntry,
+  LedgerEntryType,
+} from '../ledger-entry/entities/ledger-entry.entity';
+import { OtpVerification } from './entities/otp-verification.entity';
+import {
+  ApprovalAction,
+  TransactionApproval,
+} from './entities/transaction-approval.entity';
+import { MailService } from '../mail/mail.service';
+import { User } from '../user/user.entity';
 
 export interface TransactionFilters {
   status?: string;
@@ -34,179 +46,512 @@ export interface TransactionFilters {
 
 @Injectable()
 export class TransactionService {
+  // Cấu hình hạn mức (Nên đưa vào biến môi trường .env)
+  private readonly OTP_THRESHOLD = 10000000; // 10 triệu
+  private readonly APPROVAL_THRESHOLD = 500000000; // 500 triệu
+  private readonly MAX_OTP_ATTEMPTS = 3;
+  private readonly MAX_RESEND_LIMIT = 3;
+
   constructor(
+    private readonly dataSource: DataSource,
+    private readonly eventEmitter: EventEmitter2,
     @InjectRepository(Transaction)
-    private transactionRepository: Repository<Transaction>,
-    private dataSource: DataSource,
-    private eventEmitter: EventEmitter2,
+    private transactionRepo: Repository<Transaction>,
+    @InjectRepository(Account) private accountRepo: Repository<Account>,
+    @InjectRepository(OtpVerification)
+    private otpRepo: Repository<OtpVerification>, // [MỚI]
+    @InjectRepository(TransactionApproval)
+    private approvalRepo: Repository<TransactionApproval>,
+    private mailService: MailService,
   ) {}
 
-  async transferFunds(
+  async initiateTransfer(
     userId: string,
     transferDto: TransferDto,
     idempotencyKey: string,
   ) {
     const { toAccountNumber, amount, description } = transferDto;
 
-    const existingTransaction = await this.transactionRepository.findOne({
+    // 1. Chống trùng lặp (Idempotency)
+    const existingTx = await this.transactionRepo.findOne({
       where: { idempotencyKey },
     });
-
-    if (existingTransaction) {
+    if (existingTx) {
       return {
         success: true,
-        message: 'Giao dịch đã được xử lý thành công trước đó.',
-        transactionId: existingTransaction.id,
+        message: 'Giao dịch đã được ghi nhận',
+        transactionId: existingTx.id,
+        status: existingTx.status,
       };
     }
 
+    // 2. Lấy thông tin tài khoản (Kiểm tra nhanh, KHÔNG khóa row)
+    const senderAccount = await this.accountRepo.findOne({
+      where: { user: { id: userId } },
+      relations: { user: true },
+    });
+    const receiverAccount = await this.accountRepo.findOne({
+      where: { accountNumber: toAccountNumber, isActive: true },
+      relations: { user: true },
+    });
+
+    if (!senderAccount)
+      throw new BadRequestException('Không tìm thấy tài khoản nguồn.');
+    if (!receiverAccount)
+      throw new BadRequestException(
+        'Tài khoản đích không tồn tại hoặc bị khóa.',
+      );
+    if (senderAccount.accountNumber === toAccountNumber)
+      throw new BadRequestException('Không thể tự chuyển khoản.');
+
+    if (parseFloat(senderAccount.balance.toString()) < amount) {
+      throw new BadRequestException('Số dư khả dụng không đủ.');
+    }
+
+    // 3. Phân luồng rủi ro (Routing State)
+    let initialStatus = TransactionStatus.PROCESSING; // Luồng tự động mặc định
+
+    if (amount >= this.APPROVAL_THRESHOLD) {
+      initialStatus = TransactionStatus.PENDING_APPROVAL;
+    } else if (amount >= this.OTP_THRESHOLD) {
+      initialStatus = TransactionStatus.PENDING_OTP;
+    }
+
+    console.log('Transaction status:1' + initialStatus);
+
+    // 4. Lưu bản ghi Transaction định danh
+    const transaction = this.transactionRepo.create({
+      amount,
+      type: TransactionType.TRANSFER,
+      status: initialStatus,
+      description: description || `Chuyển tiền tới ${toAccountNumber}`,
+      fromAccount: senderAccount,
+      toAccount: receiverAccount,
+      idempotencyKey,
+    });
+    const savedTx = await this.transactionRepo.save(transaction);
+
+    if (initialStatus === TransactionStatus.PENDING_OTP) {
+      const plainOtp = Math.floor(100000 + Math.random() * 900000).toString();
+
+      const saltRounds = 10;
+      const hashedOtp = await bcrypt.hash(plainOtp, saltRounds);
+
+      // 1. Lưu OTP vào bảng otp_verifications (như code trước)
+      const expiresAt = new Date();
+      expiresAt.setMinutes(expiresAt.getMinutes() + 5);
+      await this.otpRepo.save({
+        transaction: savedTx,
+        otpHash: hashedOtp,
+        expiresAt,
+      });
+
+      // 2. Gọi MailService để gửi trực tiếp thông tin và mã OTP
+      this.mailService.sendOtpEmail(
+        senderAccount.user.email,
+        plainOtp,
+        amount,
+        toAccountNumber,
+        senderAccount.user.fullName,
+      );
+    }
+
+    // 5. Xử lý dựa trên trạng thái
+    if (initialStatus === TransactionStatus.PROCESSING) {
+      // Nếu là luồng tự động (dưới 10tr), gọi tiếp hàm xử lý Core DB Transaction
+      console.log('Processing transaction');
+      return await this.executeTransferCore(savedTx.id);
+    }
+
+    console.log('Transaction status:2' + initialStatus);
+
+    // Nếu cần OTP hoặc Duyệt, trả về trạng thái để Client điều hướng
+    return {
+      message:
+        initialStatus === TransactionStatus.PENDING_OTP
+          ? 'Vui lòng xác thực OTP'
+          : 'Giao dịch đang chờ kiểm duyệt',
+      transactionId: savedTx.id,
+      status: initialStatus,
+    };
+  }
+
+  private async executeTransferCore(transactionId: string) {
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
 
     try {
-      // 1. Lấy và KHÓA tài khoản người gửi (Pessimistic Write Lock)
-      const senderAccount = await queryRunner.manager
-        .createQueryBuilder(Account, 'account')
-        .innerJoinAndSelect('account.user', 'user') // Ép dùng INNER JOIN
-        .where('user.id = :userId', { userId })
-        .setLock('pessimistic_write') // Khóa dòng an toàn
-        .getOne();
+      // Lấy lại giao dịch trong transaction DB
+      const tx = await queryRunner.manager.findOne(Transaction, {
+        where: { id: transactionId },
+        relations: {
+          fromAccount: {
+            user: true, // Lấy bảng user bên trong fromAccount
+          },
+          toAccount: {
+            user: true, // Lấy bảng user bên trong toAccount
+          },
+        },
+      });
 
-      if (!senderAccount) {
-        throw new BadRequestException('Không tìm thấy tài khoản nguồn.');
-      }
-
-      // 2. Chống tự chuyển khoản cho chính mình
-      if (senderAccount.accountNumber === toAccountNumber) {
+      // 1. KỸ THUẬT CHỐNG DEADLOCK: Phải khóa các dòng tài khoản theo thứ tự ID tăng dần
+      if (!tx) {
         throw new BadRequestException(
-          'Không thể tự chuyển khoản cho chính mình.',
+          'Không tìm thấy giao dịch trong hệ thống.',
         );
       }
+      const accountIds = [tx.fromAccount.id, tx.toAccount.id].sort();
 
-      // 3. Lấy và KHÓA tài khoản người nhận bằng QueryBuilder
-      const receiverAccount = await queryRunner.manager
-        .createQueryBuilder(Account, 'account')
-        .innerJoinAndSelect('account.user', 'user') // Ép dùng INNER JOIN
-        .where('account.accountNumber = :accountNumber', {
-          accountNumber: toAccountNumber,
-        })
-        .andWhere('account.isActive = :isActive', { isActive: true })
-        .setLock('pessimistic_write') // Khóa dòng an toàn
-        .getOne();
-
-      if (!receiverAccount) {
-        throw new BadRequestException(
-          'Tài khoản đích không tồn tại hoặc đã bị khóa.',
-        );
-      }
-
-      // 4. Kiểm tra số dư (Ép kiểu float vì Postgres numeric trả về string)
-      const currentBalance = parseFloat(senderAccount.balance.toString());
-      if (currentBalance < amount) {
-        throw new BadRequestException(
-          'Số dư khả dụng không đủ để thực hiện giao dịch.',
-        );
-      }
-
-      // 5. Cập nhật số dư hai bên
-      senderAccount.balance = currentBalance - amount;
-      receiverAccount.balance =
-        parseFloat(receiverAccount.balance.toString()) + amount;
-
-      await queryRunner.manager.save(Account, senderAccount);
-      await queryRunner.manager.save(Account, receiverAccount);
-
-      // 6. Ghi lại lịch sử giao dịch
-      const transaction = new Transaction();
-      transaction.amount = amount;
-      transaction.type = TransactionType.TRANSFER;
-      transaction.status = TransactionStatus.SUCCESS;
-      transaction.description =
-        description || `Chuyển tiền tới ${toAccountNumber}`;
-      transaction.fromAccount = senderAccount;
-      transaction.toAccount = receiverAccount;
-      transaction.idempotencyKey = idempotencyKey;
-
-      const savedTransaction = await queryRunner.manager.save(
-        Transaction,
-        transaction,
+      await queryRunner.manager.query(
+        `SELECT id FROM accounts WHERE id IN ($1, $2) FOR UPDATE`,
+        accountIds,
       );
 
-      // 7. Commit toàn bộ thay đổi
-      const senderNotification = new Notification();
-      senderNotification.user = senderAccount.user;
-      senderNotification.type = NotificationType.TRANSFER_OUT;
-      senderNotification.title = 'Chuyển tiền thành công';
-      senderNotification.message = `Bạn đã chuyển ${amount} VND tới STK ${toAccountNumber}.`;
-      senderNotification.amount = amount;
-      senderNotification.balanceAfterTransaction = senderAccount.balance;
-      senderNotification.transaction = savedTransaction;
-      senderNotification.status = NotificationStatus.PENDING;
+      // Lấy data mới nhất sau khi đã khóa an toàn
+      const senderAcc = await queryRunner.manager.findOne(Account, {
+        where: { id: tx.fromAccount.id },
+        relations: { user: true },
+      });
 
-      // 7.2 Thông báo cho Người Nhận (Tiền vào)
-      const receiverNotification = new Notification();
-      receiverNotification.user = receiverAccount.user;
-      receiverNotification.type = NotificationType.TRANSFER_IN;
-      receiverNotification.title = 'Nhận tiền thành công';
-      receiverNotification.message = `Bạn vừa nhận được ${amount} VND từ STK ${senderAccount.accountNumber}.`;
-      receiverNotification.amount = amount;
-      receiverNotification.balanceAfterTransaction = receiverAccount.balance;
-      receiverNotification.transaction = savedTransaction;
-      receiverNotification.status = NotificationStatus.PENDING;
+      if (!senderAcc) {
+        throw new BadRequestException(
+          'Không tìm thấy tài khoản người gửi trong hệ thống.',
+        );
+      }
 
-      // Lưu cùng lúc cả 2 thông báo vào DB
+      const receiverAcc = await queryRunner.manager.findOne(Account, {
+        where: { id: tx.toAccount.id },
+        relations: { user: true },
+      });
+
+      if (!receiverAcc) {
+        throw new BadRequestException(
+          'Không tìm thấy tài khoản người nhận trong hệ thống.',
+        );
+      }
+      const amountToTransfer = parseFloat(tx.amount.toString());
+
+      // Kiểm tra lại số dư lần cuối
+      if (parseFloat(senderAcc.balance.toString()) < amountToTransfer) {
+        throw new BadRequestException('Số dư không đủ tại thời điểm đối soát.');
+      }
+
+      // 2. Cập nhật Cache Số dư
+      senderAcc.balance =
+        parseFloat(senderAcc.balance.toString()) - amountToTransfer;
+      receiverAcc.balance =
+        parseFloat(receiverAcc.balance.toString()) + amountToTransfer;
+      await queryRunner.manager.save(Account, [senderAcc, receiverAcc]);
+
+      // 3. SỔ CÁI KÉP (Double-Entry Ledger): Ghi Nợ và Ghi Có
+      const debitEntry = queryRunner.manager.create(LedgerEntry, {
+        type: LedgerEntryType.DEBIT,
+        amount: amountToTransfer,
+        balanceAfter: senderAcc.balance,
+        account: senderAcc,
+        transaction: tx,
+      });
+
+      const creditEntry = queryRunner.manager.create(LedgerEntry, {
+        type: LedgerEntryType.CREDIT,
+        amount: amountToTransfer,
+        balanceAfter: receiverAcc.balance,
+        account: receiverAcc,
+        transaction: tx,
+      });
+      await queryRunner.manager.save(LedgerEntry, [debitEntry, creditEntry]);
+
+      // 4. Tạo thông báo (Giữ nguyên logic của bạn)
+      const senderNotification = this.createNotification(
+        senderAcc,
+        NotificationType.TRANSFER_OUT,
+        amountToTransfer,
+        senderAcc.balance,
+        tx,
+      );
+      const receiverNotification = this.createNotification(
+        receiverAcc,
+        NotificationType.TRANSFER_IN,
+        amountToTransfer,
+        receiverAcc.balance,
+        tx,
+      );
       const savedNotifications = await queryRunner.manager.save(Notification, [
         senderNotification,
         receiverNotification,
       ]);
 
-      // 8. Commit toàn bộ thay đổi (Tiền và Thông báo đều được ghi lại an toàn)
+      // 5. Cập nhật trạng thái giao dịch
+      tx.status = TransactionStatus.COMPLETED;
+      await queryRunner.manager.save(Transaction, tx);
+
+      // COMMIT GIAO DỊCH
       await queryRunner.commitTransaction();
 
-      // ==============================================================
-      // 9. CẬP NHẬT: BẮN SỰ KIỆN ĐỂ CHẠY NGẦM SOCKET (KẾT THÚC API)
-      // ==============================================================
-
-      // Bắn sự kiện cho người gửi
+      // Bắn sự kiện chạy ngầm
       this.eventEmitter.emit('notification.created', {
         notificationId: savedNotifications[0].id,
-        userId: senderAccount.user.id,
+        userId: senderAcc.user.id,
       });
-
-      // Bắn sự kiện cho người nhận
       this.eventEmitter.emit('notification.created', {
         notificationId: savedNotifications[1].id,
-        userId: receiverAccount.user.id,
+        userId: receiverAcc.user.id,
       });
 
       return {
         success: true,
         message: 'Chuyển khoản thành công',
-        transactionId: savedTransaction.id,
-        newBalance: senderAccount.balance,
+        transactionId: tx.id,
+        status: tx.status,
       };
     } catch (error) {
-      // BẤT KỲ LỖI GÌ CŨNG PHẢI ROLLBACK (Không mất tiền, không sinh thông báo rác)
-      await queryRunner.rollbackTransaction();
-
-      if (error instanceof BadRequestException) {
-        throw error;
+      if (queryRunner.isTransactionActive) {
+        await queryRunner.rollbackTransaction();
       }
 
-      if (error.code === '23505' && error.detail.includes('idempotency_key')) {
-        throw new BadRequestException(
-          'Giao dịch đang được xử lý. Vui lòng không thao tác quá nhanh.',
-        );
-      }
+      // Chuyển trạng thái giao dịch thành FAILED ở một kết nối độc lập
+      await this.transactionRepo.update(transactionId, {
+        status: TransactionStatus.FAILED,
+      });
 
-      console.error('Lỗi giao dịch:', error);
+      // Bắn lỗi ra ngoài (có thể console.log(error) ở đây để dễ debug hơn)
       throw new InternalServerErrorException(
-        'Giao dịch thất bại do lỗi hệ thống. Đã hoàn tác.',
+        error.message || 'Lỗi hệ thống khi xử lý dòng tiền.',
       );
     } finally {
       await queryRunner.release();
     }
+  }
+
+  // Hàm hỗ trợ tạo Notification Entity cho gọn code
+  private createNotification(
+    account: Account,
+    type: NotificationType,
+    amount: number,
+    balance: number,
+    tx: Transaction,
+  ) {
+    const notif = new Notification();
+    notif.user = account.user;
+    notif.type = type;
+    notif.amount = amount;
+    notif.balanceAfterTransaction = balance;
+    notif.transaction = tx;
+    notif.status = NotificationStatus.PENDING;
+    notif.title =
+      type === NotificationType.TRANSFER_OUT
+        ? 'Chuyển tiền thành công'
+        : 'Nhận tiền thành công';
+
+    if (type === NotificationType.TRANSFER_OUT) {
+      notif.title = 'Chuyển tiền thành công';
+      notif.message = `Bạn đã chuyển ${amount.toLocaleString('vi-VN')} VND.`;
+    } else {
+      notif.title = 'Nhận tiền thành công';
+      notif.message = `Bạn đã nhận ${amount.toLocaleString('vi-VN')} VND.`;
+    }
+    return notif;
+  }
+
+  async confirmOtpTransfer(
+    userId: string,
+    transactionId: string,
+    otpCode: string,
+  ) {
+    // Lấy giao dịch
+    const tx = await this.transactionRepo.findOne({
+      where: { id: transactionId },
+      relations: { fromAccount: { user: true } },
+    });
+    if (!tx || tx.fromAccount.user.id !== userId)
+      throw new BadRequestException('Giao dịch không hợp lệ');
+    if (tx.status !== TransactionStatus.PENDING_OTP)
+      throw new BadRequestException('Giao dịch không chờ OTP');
+
+    // ==========================================
+    // [MỚI] TRUY VẤN VÀ KIỂM TRA BẢNG OTP
+    // ==========================================
+    const otpRecord = await this.otpRepo.findOne({
+      where: { transaction: { id: transactionId } },
+    });
+
+    if (!otpRecord) throw new BadRequestException('Không tìm thấy dữ liệu OTP');
+
+    // 1. Kiểm tra hết hạn
+    if (new Date() > otpRecord.expiresAt) {
+      await this.transactionRepo.update(tx.id, {
+        status: TransactionStatus.FAILED,
+      });
+      throw new BadRequestException('Mã OTP đã hết hạn. Giao dịch bị hủy.');
+    }
+
+    // 2. So sánh mã (Ở thực tế sẽ dùng bcrypt.compare)
+    const isValidOtp = await bcrypt.compare(otpCode, otpRecord.otpHash);
+
+    if (!isValidOtp) {
+      // Tăng biến đếm nhập sai
+      otpRecord.failedAttempts += 1;
+      await this.otpRepo.save(otpRecord);
+
+      if (otpRecord.failedAttempts >= this.MAX_OTP_ATTEMPTS) {
+        await this.transactionRepo.update(tx.id, {
+          status: TransactionStatus.FAILED,
+        });
+        throw new BadRequestException(
+          'Nhập sai OTP quá 3 lần. Giao dịch bị hủy.',
+        );
+      }
+
+      throw new BadRequestException(
+        `OTP không chính xác. Bạn còn ${this.MAX_OTP_ATTEMPTS - otpRecord.failedAttempts} lần thử.`,
+      );
+    }
+
+    // 3. OTP Đúng -> XÓA bản ghi OTP để không dùng lại được nữa
+    await this.otpRepo.delete(otpRecord.id);
+
+    // 4. Chuyển trạng thái và xử lý tiền
+    await this.transactionRepo.update(tx.id, {
+      status: TransactionStatus.PROCESSING,
+    });
+    return this.executeTransferCore(tx.id);
+  }
+
+  async approveTransfer(
+    adminId: string,
+    transactionId: string,
+    action: ApprovalAction,
+    remarks?: string,
+  ) {
+    const tx = await this.transactionRepo.findOne({
+      where: { id: transactionId },
+    });
+    if (!tx || tx.status !== TransactionStatus.PENDING_APPROVAL)
+      throw new BadRequestException('Giao dịch không chờ duyệt');
+
+    // ==========================================
+    // [MỚI] LƯU DẤU VẾT VÀO BẢNG APPROVAL
+    // ==========================================
+    const approvalRecord = this.approvalRepo.create({
+      transaction: tx,
+      checker: { id: adminId } as User, // Gắn ID Admin
+      action: action,
+      remarks: remarks || '',
+    });
+    await this.approvalRepo.save(approvalRecord);
+
+    // Xử lý theo quyết định của Admin
+    if (action === ApprovalAction.REJECTED) {
+      // Từ chối -> Cập nhật Failed
+      await this.transactionRepo.update(tx.id, {
+        status: TransactionStatus.FAILED,
+      });
+      return { success: true, message: 'Đã từ chối giao dịch' };
+    }
+
+    // Phê duyệt -> Chuyển trạng thái và gọi xử lý tiền
+    await this.transactionRepo.update(tx.id, {
+      status: TransactionStatus.PROCESSING,
+    });
+    return this.executeTransferCore(tx.id);
+  }
+
+  async resendOtp(userId: string, transactionId: string) {
+    // 1. Tìm giao dịch và kiểm tra quyền sở hữu
+    const tx = await this.transactionRepo.findOne({
+      where: { id: transactionId },
+      relations: {
+        fromAccount: { user: true },
+        toAccount: true,
+      },
+    });
+
+    if (!tx) {
+      throw new BadRequestException('Giao dịch không tồn tại.');
+    }
+
+    if (tx.fromAccount.user.id !== userId) {
+      throw new BadRequestException(
+        'Bạn không có quyền thực hiện thao tác trên giao dịch này.',
+      );
+    }
+
+    // 2. Kiểm tra trạng thái State Machine xem có hợp lệ để gửi lại OTP không
+    if (tx.status !== TransactionStatus.PENDING_OTP) {
+      throw new BadRequestException(
+        'Giao dịch không ở trạng thái chờ xác thực OTP.',
+      );
+    }
+
+    // 3. Tìm bản ghi OTP hiện tại trong DB
+    let otpRecord = await this.otpRepo.findOne({
+      where: { transaction: { id: transactionId } },
+    });
+
+    // 4. CHỐNG SPAM (Cool-down check): Kiểm tra xem khoảng cách giữa lần tạo trước và hiện tại
+    if (otpRecord) {
+      const now = new Date().getTime();
+
+      const lastSentTime = new Date(
+        otpRecord.updatedAt || otpRecord.createdAt,
+      ).getTime();
+
+      const cooldownPeriod = 60 * 1000; // 1 phút
+
+      if (now - lastSentTime < cooldownPeriod) {
+        const secondsLeft = Math.ceil(
+          (cooldownPeriod - (now - lastSentTime)) / 1000,
+        );
+        throw new BadRequestException(
+          `Vui lòng đợi ${secondsLeft} giây trước khi yêu cầu gửi lại mã OTP mới.`,
+        );
+      }
+    }
+
+    // 5. Sinh mã OTP 6 số mới
+    const plainOtp = Math.floor(100000 + Math.random() * 900000).toString();
+
+    // 6. Băm (Hash) mã OTP mới để bảo mật tuyệt đối cho DB
+    const saltRounds = 10;
+    const hashedOtp = await bcrypt.hash(plainOtp, saltRounds);
+
+    // 7. Thiết lập thời gian hết hạn mới (5 phút kể từ bây giờ)
+    const expiresAt = new Date();
+    expiresAt.setMinutes(expiresAt.getMinutes() + 5);
+
+    if (otpRecord) {
+      // Nếu đã có bản ghi, cập nhật thông tin và reset số lần nhập sai về 0
+      otpRecord.otpHash = hashedOtp;
+      otpRecord.expiresAt = expiresAt;
+      otpRecord.failedAttempts = 0;
+      await this.otpRepo.save(otpRecord);
+    } else {
+      // Trường hợp hiếm gặp: Giao dịch PENDING_OTP nhưng bản ghi OTP bị xóa mất, ta tạo mới
+      otpRecord = this.otpRepo.create({
+        transaction: tx,
+        otpHash: hashedOtp,
+        expiresAt: expiresAt,
+        failedAttempts: 0,
+      });
+      await this.otpRepo.save(otpRecord);
+    }
+
+    // 8. Gửi lại Email chứa mã OTP mới và thông tin giao dịch để chống Phishing
+    const amountToTransfer = parseFloat(tx.amount.toString());
+    await this.mailService.sendOtpEmail(
+      tx.fromAccount.user.email,
+      plainOtp, // Gửi mã OTP nguyên bản (Plain)
+      amountToTransfer,
+      tx.toAccount.accountNumber,
+      tx.fromAccount.user.fullName,
+    );
+
+    return {
+      success: true,
+      message: 'Mã OTP mới đã được gửi vào email của bạn.',
+      transactionId: tx.id,
+    };
   }
 
   async getTransactionHistory(
@@ -265,18 +610,16 @@ export class TransactionService {
     }
 
     // 3. Thực thi query
-    const [transactions, total] = await this.transactionRepository.findAndCount(
-      {
-        where: whereCondition,
-        relations: {
-          fromAccount: true,
-          toAccount: true,
-        },
-        order: { createdAt: 'DESC' }, // Giao dịch mới nhất lên đầu
-        skip,
-        take: limit,
+    const [transactions, total] = await this.transactionRepo.findAndCount({
+      where: whereCondition,
+      relations: {
+        fromAccount: true,
+        toAccount: true,
       },
-    );
+      order: { createdAt: 'DESC' }, // Giao dịch mới nhất lên đầu
+      skip,
+      take: limit,
+    });
 
     const formattedItems = transactions.map((tx) => ({
       id: tx.id,

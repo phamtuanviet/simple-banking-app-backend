@@ -4,12 +4,14 @@ import { ExtractJwt, Strategy } from 'passport-jwt';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { User, UserStatus } from '../../user/user.entity';
+import { ClsService } from 'nestjs-cls';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   constructor(
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
+    private readonly cls: ClsService,
   ) {
     // Cấu hình cách lấy và giải mã Token
     const secret = process.env.JWT_ACCESS_SECRET;
@@ -44,6 +46,7 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     // 2. BẤT CỨ THỨ GÌ bạn return ở đây, NestJS sẽ tự động gán nó vào `request.user`
     // Để tối ưu bộ nhớ và bảo mật, ta bỏ lại passwordHash trước khi return
     const { passwordHash, ...userWithoutPassword } = user;
+    this.cls.set('userId', user.id);
 
     return userWithoutPassword;
   }

@@ -3,9 +3,17 @@ import { UserController } from './user.controller';
 import { UserService } from './user.service';
 import { User } from './user.entity';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { OtpVerification } from '../transaction/entities/otp-verification.entity';
+import { RefreshToken } from '../auth/entities/refresh-token.entity';
+import { CloudinaryModule } from '../cloudinary/cloudinary.module';
+import { MailModule } from '../mail/mail.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([User])],
+  imports: [
+    TypeOrmModule.forFeature([User, OtpVerification, RefreshToken]),
+    CloudinaryModule, // Import module chứa CloudinaryService
+    MailModule, // Import module chứa MailService
+  ],
   controllers: [UserController],
   providers: [UserService],
   exports: [UserService],

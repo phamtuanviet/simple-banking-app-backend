@@ -7,6 +7,7 @@ import {
   UpdateDateColumn,
   ManyToOne,
   JoinColumn,
+  DeleteDateColumn,
 } from 'typeorm';
 
 @Entity('accounts')
@@ -36,4 +37,7 @@ export class Account {
   @ManyToOne(() => User, { onDelete: 'RESTRICT' }) // Không cho xóa User nếu còn Account
   @JoinColumn({ name: 'user_id' })
   user: User;
+
+  @DeleteDateColumn({ name: 'deleted_at', nullable: true })
+  deletedAt: Date;
 }
