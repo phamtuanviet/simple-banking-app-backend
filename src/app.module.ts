@@ -14,6 +14,7 @@ import { ClsModule } from 'nestjs-cls';
 import { Request } from 'express';
 import { AuditLogModule } from './modules/audit-log/audit-log.module';
 import { CloudinaryModule } from './modules/cloudinary/cloudinary.module';
+import { LedgerEntryModule } from './modules/ledger-entry/ledger-entry.module';
 
 @Module({
   imports: [
@@ -50,6 +51,7 @@ import { CloudinaryModule } from './modules/cloudinary/cloudinary.module';
     NotificationModule,
     AuditLogModule,
     CloudinaryModule,
+    LedgerEntryModule,
   ],
   controllers: [],
   providers: [],
