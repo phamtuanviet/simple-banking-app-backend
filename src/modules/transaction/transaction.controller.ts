@@ -16,8 +16,9 @@ import { RolesGuard } from 'src/common/guards/roles.guard';
 import { UserRole } from '../user/user.entity';
 import { Roles } from 'src/common/decorators/roles.decorator';
 import { ApprovalAction } from './entities/transaction-approval.entity';
+import { CashTransactionDto } from './dto/cash-transaction.dto';
 
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, RolesGuard)
 @Controller('transactions')
 export class TransactionController {
   constructor(private readonly transactionService: TransactionService) {}
@@ -102,5 +103,17 @@ export class TransactionController {
       limit ? parseInt(limit, 10) : 10,
       { status, startDate, endDate, flow },
     );
+  }
+
+  @Post('deposit')
+  @Roles(UserRole.TELLER, UserRole.ADMIN) // Kích hoạt RBAC phân quyền chặt chẽ tại quầy
+  async deposit(@Body() dto: CashTransactionDto) {
+    return await this.transactionService.deposit(dto);
+  }
+
+  @Post('withdraw')
+  @Roles(UserRole.TELLER, UserRole.ADMIN)
+  async withdraw(@Body() dto: CashTransactionDto) {
+    return await this.transactionService.withdraw(dto);
   }
 }

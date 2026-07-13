@@ -2,6 +2,7 @@ import {
   Injectable,
   BadRequestException,
   InternalServerErrorException,
+  NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
@@ -36,6 +37,7 @@ import {
 } from './entities/transaction-approval.entity';
 import { MailService } from '../mail/mail.service';
 import { User } from '../user/user.entity';
+import { CashTransactionDto } from './dto/cash-transaction.dto';
 
 export interface TransactionFilters {
   status?: string;
@@ -49,6 +51,7 @@ export class TransactionService {
   // Cấu hình hạn mức (Nên đưa vào biến môi trường .env)
   private readonly OTP_THRESHOLD = 10000000; // 10 triệu
   private readonly APPROVAL_THRESHOLD = 500000000; // 500 triệu
+  private readonly WITHDRAWAL_APPROVAL_THRESHOLD = 500000000;
   private readonly MAX_OTP_ATTEMPTS = 3;
   private readonly MAX_RESEND_LIMIT = 3;
 
@@ -160,7 +163,7 @@ export class TransactionService {
     if (initialStatus === TransactionStatus.PROCESSING) {
       // Nếu là luồng tự động (dưới 10tr), gọi tiếp hàm xử lý Core DB Transaction
       console.log('Processing transaction');
-      return await this.executeTransferCore(savedTx.id);
+      return await this.executeTransactionCore(savedTx.id);
     }
 
     console.log('Transaction status:2' + initialStatus);
@@ -176,132 +179,204 @@ export class TransactionService {
     };
   }
 
-  private async executeTransferCore(transactionId: string) {
+  public async executeTransactionCore(transactionId: string) {
     const queryRunner = this.dataSource.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
 
     try {
-      // Lấy lại giao dịch trong transaction DB
+      // Lấy lại giao dịch (Lấy cả relations nhưng cẩn thận có thể bị null với Nạp/Rút)
       const tx = await queryRunner.manager.findOne(Transaction, {
         where: { id: transactionId },
         relations: {
-          fromAccount: {
-            user: true, // Lấy bảng user bên trong fromAccount
-          },
-          toAccount: {
-            user: true, // Lấy bảng user bên trong toAccount
-          },
+          fromAccount: { user: true },
+          toAccount: { user: true },
         },
       });
 
-      // 1. KỸ THUẬT CHỐNG DEADLOCK: Phải khóa các dòng tài khoản theo thứ tự ID tăng dần
       if (!tx) {
         throw new BadRequestException(
           'Không tìm thấy giao dịch trong hệ thống.',
         );
       }
-      const accountIds = [tx.fromAccount.id, tx.toAccount.id].sort();
 
-      await queryRunner.manager.query(
-        `SELECT id FROM accounts WHERE id IN ($1, $2) FOR UPDATE`,
-        accountIds,
-      );
+      // ==========================================
+      // 1. KỸ THUẬT CHỐNG DEADLOCK TỔNG QUÁT
+      // ==========================================
+      const accountIdsToLock: string[] = [];
+      if (tx.fromAccount) accountIdsToLock.push(tx.fromAccount.id);
+      if (tx.toAccount) accountIdsToLock.push(tx.toAccount.id);
 
-      // Lấy data mới nhất sau khi đã khóa an toàn
-      const senderAcc = await queryRunner.manager.findOne(Account, {
-        where: { id: tx.fromAccount.id },
-        relations: { user: true },
-      });
+      // Sắp xếp ID tăng dần để chống khóa chéo
+      accountIdsToLock.sort();
 
-      if (!senderAcc) {
-        throw new BadRequestException(
-          'Không tìm thấy tài khoản người gửi trong hệ thống.',
+      if (accountIdsToLock.length > 0) {
+        // Tạo query động theo số lượng account cần khóa ($1, $2)
+        const placeholders = accountIdsToLock
+          .map((_, i) => `$${i + 1}`)
+          .join(', ');
+        await queryRunner.manager.query(
+          `SELECT id FROM accounts WHERE id IN (${placeholders}) FOR UPDATE`,
+          accountIdsToLock,
         );
       }
 
-      const receiverAcc = await queryRunner.manager.findOne(Account, {
-        where: { id: tx.toAccount.id },
-        relations: { user: true },
-      });
+      // Lấy data mới nhất sau khi đã khóa an tocreateNotificationàn
+      let senderAcc: Account | null = null;
+      let receiverAcc: Account | null = null;
 
-      if (!receiverAcc) {
-        throw new BadRequestException(
-          'Không tìm thấy tài khoản người nhận trong hệ thống.',
-        );
+      if (tx.fromAccount) {
+        senderAcc = await queryRunner.manager.findOne(Account, {
+          where: { id: tx.fromAccount.id },
+          relations: { user: true },
+        });
+        if (!senderAcc)
+          throw new BadRequestException('Không tìm thấy tài khoản nguồn.');
       }
+
+      if (tx.toAccount) {
+        receiverAcc = await queryRunner.manager.findOne(Account, {
+          where: { id: tx.toAccount.id },
+          relations: { user: true },
+        });
+        if (!receiverAcc)
+          throw new BadRequestException('Không tìm thấy tài khoản đích.');
+      }
+
       const amountToTransfer = parseFloat(tx.amount.toString());
 
-      // Kiểm tra lại số dư lần cuối
-      if (parseFloat(senderAcc.balance.toString()) < amountToTransfer) {
-        throw new BadRequestException('Số dư không đủ tại thời điểm đối soát.');
+      // ==========================================
+      // 2. KIỂM TRA SỐ DƯ (Chỉ áp dụng nếu có tài khoản nguồn bị trừ tiền)
+      // ==========================================
+      if (senderAcc) {
+        if (parseFloat(senderAcc.balance.toString()) < amountToTransfer) {
+          throw new BadRequestException(
+            'Số dư không đủ tại thời điểm đối soát.',
+          );
+        }
+        // Cập nhật số dư người gửi (TRANSFER, WITHDRAWAL)
+        senderAcc.balance =
+          parseFloat(senderAcc.balance.toString()) - amountToTransfer;
       }
 
-      // 2. Cập nhật Cache Số dư
-      senderAcc.balance =
-        parseFloat(senderAcc.balance.toString()) - amountToTransfer;
-      receiverAcc.balance =
-        parseFloat(receiverAcc.balance.toString()) + amountToTransfer;
-      await queryRunner.manager.save(Account, [senderAcc, receiverAcc]);
+      if (receiverAcc) {
+        // Cập nhật số dư người nhận (TRANSFER, DEPOSIT)
+        receiverAcc.balance =
+          parseFloat(receiverAcc.balance.toString()) + amountToTransfer;
+      }
 
-      // 3. SỔ CÁI KÉP (Double-Entry Ledger): Ghi Nợ và Ghi Có
-      const debitEntry = queryRunner.manager.create(LedgerEntry, {
-        type: LedgerEntryType.DEBIT,
-        amount: amountToTransfer,
-        balanceAfter: senderAcc.balance,
-        account: senderAcc,
-        transaction: tx,
-      });
-
-      const creditEntry = queryRunner.manager.create(LedgerEntry, {
-        type: LedgerEntryType.CREDIT,
-        amount: amountToTransfer,
-        balanceAfter: receiverAcc.balance,
-        account: receiverAcc,
-        transaction: tx,
-      });
-      await queryRunner.manager.save(LedgerEntry, [debitEntry, creditEntry]);
-
-      // 4. Tạo thông báo (Giữ nguyên logic của bạn)
-      const senderNotification = this.createNotification(
-        senderAcc,
-        NotificationType.TRANSFER_OUT,
-        amountToTransfer,
-        senderAcc.balance,
-        tx,
+      // Lưu các tài khoản có biến động
+      const accountsToSave = [senderAcc, receiverAcc].filter(
+        (acc) => acc !== null,
       );
-      const receiverNotification = this.createNotification(
-        receiverAcc,
-        NotificationType.TRANSFER_IN,
-        amountToTransfer,
-        receiverAcc.balance,
-        tx,
-      );
-      const savedNotifications = await queryRunner.manager.save(Notification, [
-        senderNotification,
-        receiverNotification,
-      ]);
+      if (accountsToSave.length > 0) {
+        await queryRunner.manager.save(Account, accountsToSave);
+      }
 
-      // 5. Cập nhật trạng thái giao dịch
+      // ==========================================
+      // 3. SỔ CÁI (Ledger) VÀ NOTIFICATION
+      // ==========================================
+      const ledgerEntries: LedgerEntry[] = [];
+      const notifications: any[] = [];
+
+      const eventTargets: { notifIndex: number; userId: string }[] = [];
+
+      // Xử lý nhánh NỢ (Debit) & Thông báo TRỪ TIỀN
+      if (senderAcc) {
+        ledgerEntries.push(
+          queryRunner.manager.create(LedgerEntry, {
+            type: LedgerEntryType.DEBIT,
+            amount: amountToTransfer,
+            balanceAfter: senderAcc.balance,
+            account: senderAcc,
+            transaction: tx,
+          }),
+        );
+
+        const notifType =
+          tx.type === TransactionType.WITHDRAWAL
+            ? NotificationType.WITHDRAWAL
+            : NotificationType.TRANSFER_OUT;
+        notifications.push(
+          this.createNotification(
+            senderAcc,
+            notifType,
+            amountToTransfer,
+            senderAcc.balance,
+            tx,
+          ),
+        );
+
+        // Nhớ lại userId của người gửi ở vị trí index tương ứng
+        eventTargets.push({
+          notifIndex: notifications.length - 1,
+          userId: senderAcc.user.id,
+        });
+      }
+
+      // Xử lý nhánh CÓ (Credit) & Thông báo NHẬN TIỀN
+      if (receiverAcc) {
+        ledgerEntries.push(
+          queryRunner.manager.create(LedgerEntry, {
+            type: LedgerEntryType.CREDIT,
+            amount: amountToTransfer,
+            balanceAfter: receiverAcc.balance,
+            account: receiverAcc,
+            transaction: tx,
+          }),
+        );
+
+        const notifType =
+          tx.type === TransactionType.DEPOSIT
+            ? NotificationType.DEPOSIT
+            : NotificationType.TRANSFER_IN;
+        notifications.push(
+          this.createNotification(
+            receiverAcc,
+            notifType,
+            amountToTransfer,
+            receiverAcc.balance,
+            tx,
+          ),
+        );
+
+        // Nhớ lại userId của người nhận ở vị trí index tương ứng
+        eventTargets.push({
+          notifIndex: notifications.length - 1,
+          userId: receiverAcc.user.id,
+        });
+      }
+
+      // Lưu hàng loạt Sổ cái và Thông báo
+      if (ledgerEntries.length > 0)
+        await queryRunner.manager.save(LedgerEntry, ledgerEntries);
+      let savedNotifications: any[] = [];
+      if (notifications.length > 0) {
+        savedNotifications = await queryRunner.manager.save(
+          Notification,
+          notifications,
+        );
+      }
+
+      // ==========================================
+      // 4. CHỐT GIAO DỊCH VÀ BẮN SỰ KIỆN
+      // ==========================================
       tx.status = TransactionStatus.COMPLETED;
       await queryRunner.manager.save(Transaction, tx);
 
-      // COMMIT GIAO DỊCH
       await queryRunner.commitTransaction();
 
-      // Bắn sự kiện chạy ngầm
-      this.eventEmitter.emit('notification.created', {
-        notificationId: savedNotifications[0].id,
-        userId: senderAcc.user.id,
-      });
-      this.eventEmitter.emit('notification.created', {
-        notificationId: savedNotifications[1].id,
-        userId: receiverAcc.user.id,
-      });
+      // Bắn sự kiện chạy ngầm cho tất cả notification được sinh ra
+      for (const target of eventTargets) {
+        this.eventEmitter.emit('notification.created', {
+          notificationId: savedNotifications[target.notifIndex].id,
+          userId: target.userId, // Đảm bảo 100% không bao giờ bị undefined
+        });
+      }
 
       return {
         success: true,
-        message: 'Chuyển khoản thành công',
+        message: 'Xử lý giao dịch thành công',
         transactionId: tx.id,
         status: tx.status,
       };
@@ -315,7 +390,8 @@ export class TransactionService {
         status: TransactionStatus.FAILED,
       });
 
-      // Bắn lỗi ra ngoài (có thể console.log(error) ở đây để dễ debug hơn)
+      console.error(`[Transaction FAILED] ID: ${transactionId} - Lỗi:`, error);
+
       throw new InternalServerErrorException(
         error.message || 'Lỗi hệ thống khi xử lý dòng tiền.',
       );
@@ -325,32 +401,37 @@ export class TransactionService {
   }
 
   // Hàm hỗ trợ tạo Notification Entity cho gọn code
-  private createNotification(
+  public createNotification(
     account: Account,
     type: NotificationType,
-    amount: number,
-    balance: number,
+    amount: number | string, // Khai báo thêm string để bắt lỗi TypeORM
+    balance: number | string,
     tx: Transaction,
   ) {
     const notif = new Notification();
     notif.user = account.user;
     notif.type = type;
-    notif.amount = amount;
-    notif.balanceAfterTransaction = balance;
+
+    // Ép kiểu chắc chắn trước khi lưu vào thực thể Notification
+    const safeAmount = Number(amount);
+    const safeBalance = Number(balance);
+
+    notif.amount = safeAmount;
+    notif.balanceAfterTransaction = safeBalance;
     notif.transaction = tx;
     notif.status = NotificationStatus.PENDING;
-    notif.title =
-      type === NotificationType.TRANSFER_OUT
-        ? 'Chuyển tiền thành công'
-        : 'Nhận tiền thành công';
+
+    // Định dạng chuỗi hiển thị
+    const formattedAmount = safeAmount.toLocaleString('vi-VN');
 
     if (type === NotificationType.TRANSFER_OUT) {
       notif.title = 'Chuyển tiền thành công';
-      notif.message = `Bạn đã chuyển ${amount.toLocaleString('vi-VN')} VND.`;
+      notif.message = `Bạn đã chuyển ${formattedAmount} VND.`;
     } else {
       notif.title = 'Nhận tiền thành công';
-      notif.message = `Bạn đã nhận ${amount.toLocaleString('vi-VN')} VND.`;
+      notif.message = `Bạn đã nhận ${formattedAmount} VND.`;
     }
+
     return notif;
   }
 
@@ -415,7 +496,7 @@ export class TransactionService {
     await this.transactionRepo.update(tx.id, {
       status: TransactionStatus.PROCESSING,
     });
-    return this.executeTransferCore(tx.id);
+    return this.executeTransactionCore(tx.id);
   }
 
   async approveTransfer(
@@ -454,7 +535,7 @@ export class TransactionService {
     await this.transactionRepo.update(tx.id, {
       status: TransactionStatus.PROCESSING,
     });
-    return this.executeTransferCore(tx.id);
+    return this.executeTransactionCore(tx.id);
   }
 
   async resendOtp(userId: string, transactionId: string) {
@@ -639,5 +720,86 @@ export class TransactionService {
       limit: limit,
       lastPage: Math.ceil(total / limit),
     };
+  }
+
+  async deposit(dto: CashTransactionDto) {
+    // 1. Kiểm tra tài khoản có tồn tại không (Chỉ Read, không cần Lock ở bước này)
+    const customerAccount = await this.accountRepo.findOne({
+      where: { accountNumber: dto.accountNumber },
+    });
+    if (!customerAccount) {
+      throw new NotFoundException('Không tìm thấy tài khoản khách hàng');
+    }
+
+    // 2. Tạo bản ghi giao dịch (Hóa đơn)
+    const tx = this.transactionRepo.create({
+      amount: dto.amount,
+      type: TransactionType.DEPOSIT,
+      status: TransactionStatus.PROCESSING, // Sẵn sàng để xử lý
+      description:
+        dto.description ||
+        `Nạp tiền mặt tại quầy vào TK ${customerAccount.accountNumber}`,
+      toAccount: customerAccount,
+    });
+    const savedTx = await this.transactionRepo.save(tx);
+
+    // 3. Quăng hóa đơn cho cỗ máy Core Banking xử lý dòng tiền
+    return await this.executeTransactionCore(savedTx.id);
+  }
+
+  // ==========================================
+  // API: RÚT TIỀN TẠI QUẦY (WITHDRAWAL)
+  // ==========================================
+  async withdraw(dto: CashTransactionDto) {
+    // 1. Kiểm tra tài khoản và số dư sơ bộ
+    const customerAccount = await this.accountRepo.findOne({
+      where: { accountNumber: dto.accountNumber },
+    });
+    if (!customerAccount) {
+      throw new NotFoundException('Không tìm thấy tài khoản khách hàng');
+    }
+
+    if (Number(customerAccount.balance) < dto.amount) {
+      throw new BadRequestException(
+        'Số dư tài khoản không đủ để thực hiện giao dịch rút tiền này.',
+      );
+    }
+
+    // 2. Phân luồng rủi ro hạn mức (Hạn mức lớn >= 500Tr)
+    if (dto.amount >= this.WITHDRAWAL_APPROVAL_THRESHOLD) {
+      const tx = this.transactionRepo.create({
+        amount: dto.amount,
+        type: TransactionType.WITHDRAWAL,
+        status: TransactionStatus.PENDING_APPROVAL, // Treo hóa đơn lại, CHƯA xử lý tiền
+        description:
+          dto.description ||
+          `Rút tiền mặt giá trị lớn tại quầy từ TK ${customerAccount.accountNumber}`,
+        fromAccount: customerAccount,
+      });
+      const savedTx = await this.transactionRepo.save(tx);
+
+      return {
+        success: true,
+        transactionId: savedTx.id,
+        status: savedTx.status,
+        message:
+          'Giao dịch rút tiền vượt hạn mức quầy. Đã chuyển sang trạng thái chờ Quản lý phê duyệt.',
+      };
+    }
+
+    // 3. Giao dịch < 500Tr: Tạo hóa đơn và xử lý ngay
+    const tx = this.transactionRepo.create({
+      amount: dto.amount,
+      type: TransactionType.WITHDRAWAL,
+      status: TransactionStatus.PROCESSING,
+      description:
+        dto.description ||
+        `Rút tiền mặt tại quầy từ TK ${customerAccount.accountNumber}`,
+      fromAccount: customerAccount,
+    });
+    const savedTx = await this.transactionRepo.save(tx);
+
+    // Quăng hóa đơn cho cỗ máy Core xử lý dòng tiền
+    return await this.executeTransactionCore(savedTx.id);
   }
 }
