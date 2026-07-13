@@ -1,5 +1,6 @@
 // src/modules/user/dto/update-profile.dto.ts
 import { IsString, IsOptional, IsDateString, MaxLength } from 'class-validator';
+import { IsMinimumAge } from 'src/validators/is-minimum-age.validator';
 
 export class UpdateProfileDto {
   @IsOptional()
@@ -9,6 +10,7 @@ export class UpdateProfileDto {
 
   @IsOptional()
   @IsDateString()
+  @IsMinimumAge(18)
   dateOfBirth?: string;
 
   @IsOptional()
