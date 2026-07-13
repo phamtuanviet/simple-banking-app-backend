@@ -147,4 +147,46 @@ export class MailService {
       `,
     });
   }
+
+  async sendTransactionAlert(
+    email: string,
+    subject: string,
+    message: string,
+    fullName: string = 'Quý khách',
+  ) {
+    try {
+      await this.mailerService.sendMail({
+        to: email,
+        subject: `[JITS] ${subject}`,
+        html: `
+          <div style="font-family: 'Helvetica Neue', Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
+            <div style="background-color: #003366; padding: 25px; text-align: center;">
+              <h2 style="color: #ffffff; margin: 0; font-size: 24px; letter-spacing: 1px;">JITS BANKING</h2>
+            </div>
+            
+            <div style="padding: 30px; background-color: #ffffff; color: #333333; line-height: 1.6;">
+              <p style="font-size: 16px;">Xin chào <strong>${fullName}</strong>,</p>
+              
+              <div style="background-color: #fdf2f2; border-left: 4px solid #d9534f; padding: 15px; margin: 20px 0;">
+                <p style="font-size: 15px; color: #333333; margin: 0;">
+                  ${message}
+                </p>
+              </div>
+
+              <p style="font-size: 14px;">Nếu quý khách có bất kỳ thắc mắc nào về quyết định này, vui lòng mang theo Giấy tờ tùy thân (CCCD) ra quầy giao dịch gần nhất hoặc liên hệ Hotline bộ phận CSKH để được hỗ trợ.</p>
+            </div>
+            
+            <div style="background-color: #f8f9fa; padding: 20px; text-align: center; font-size: 12px; color: #6c757d; border-top: 1px solid #e0e0e0;">
+              <p style="margin: 0 0 5px 0;">Đây là email tự động, vui lòng không phản hồi.</p>
+              <p style="margin: 0;">&copy; ${new Date().getFullYear()} JITS Innovation Labs. All rights reserved.</p>
+            </div>
+          </div>
+        `,
+      });
+      console.log(`Đã gửi email thông báo giao dịch tới: ${email}`);
+    } catch (error) {
+      console.error('Lỗi khi gửi email thông báo giao dịch:', error);
+      // Sử dụng luồng Fire-and-Forget: Lỗi gửi mail không được phép làm gián đoạn transaction
+    }
+  }
 }

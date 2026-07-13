@@ -7,10 +7,16 @@ import { OtpVerification } from '../transaction/entities/otp-verification.entity
 import { RefreshToken } from '../auth/entities/refresh-token.entity';
 import { CloudinaryModule } from '../cloudinary/cloudinary.module';
 import { MailModule } from '../mail/mail.module';
+import { UserHistory } from './entities/user-history.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([User, OtpVerification, RefreshToken]),
+    TypeOrmModule.forFeature([
+      User,
+      OtpVerification,
+      RefreshToken,
+      UserHistory,
+    ]),
     CloudinaryModule, // Import module chứa CloudinaryService
     MailModule, // Import module chứa MailService
   ],

@@ -144,6 +144,18 @@ export class AuthService {
         email: user.email,
         fullName: user.fullName,
         role: user.role,
+        status: user.status, // Thêm trạng thái tài khoản
+
+        // ==========================================
+        // THÊM MỚI: CÁC TRƯỜNG THÔNG TIN CÁ NHÂN (PROFILE)
+        // ==========================================
+        dateOfBirth: user.dateOfBirth,
+        avatarUrl: user.avatarUrl,
+        address: user.address,
+        phoneNumber: user.phoneNumber,
+
+        // Cờ kiểm tra email đã xác thực chưa (nếu cần)
+        isEmailVerified: user.isEmailVerified,
       },
       accessToken: accessToken,
       refreshToken: refreshTokenString, // Trả về chuỗi GỐC chưa băm cho Frontend giữ

@@ -13,6 +13,8 @@ import { User } from '../user/user.entity';
 export enum NotificationType {
   TRANSFER_IN = 'transfer_in',
   TRANSFER_OUT = 'transfer_out',
+  DEPOSIT = 'deposit',
+  WITHDRAWAL = 'withdrawal',
   SYSTEM = 'system',
   SECURITY = 'security',
 }

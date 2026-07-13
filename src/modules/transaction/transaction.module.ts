@@ -23,5 +23,6 @@ import { TransactionCronService } from './transaction.cron';
   ],
   controllers: [TransactionController],
   providers: [TransactionService, TransactionCronService],
+  exports: [TransactionService],
 })
 export class TransactionModule {}
